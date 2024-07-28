@@ -129,14 +129,14 @@ void nfc_init_spi(spi_inst_t *port, uint8_t miso, uint8_t sck, uint8_t mosi,
 
 void nfc_init()
 {
-    for (int retry = 0; retry < 1; retry++) {
-        sleep_ms(200);
+    for (int retry = 0; retry < 3; retry++) {
         if (spi.port && pn532_init(spi.port, spi.nss)) {
             nfc_module = NFC_MODULE_PN532;
         }
         if (nfc_module != NFC_MODULE_UNKNOWN) {
             break;
         }
+        sleep_ms(200);
     }
 }
 

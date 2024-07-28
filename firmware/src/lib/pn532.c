@@ -7,11 +7,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdarg.h>
 
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
-#include "tusb.h"
 
 #include "pn532.h"
 
@@ -32,30 +30,9 @@
 #define DATA_WRITE      1
 #define DATA_READ       3
 
-#define PRINT_CURRENT_LINE() cdprintf("LINE %d\r\n", __LINE__)
-
 static spi_inst_t *spi_port = spi0;
 static uint8_t gpio_nss;
 static pn532_wait_loop_t wait_loop = NULL;
-
-// char last_message[256] = "";
-// char spi_log[65535] = "";
-
-static void cdprintf(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    size_t len = vsnprintf(NULL, 0, fmt, args);
-    va_end(args);
-
-    char buf[len + 1];
-    vsnprintf(buf, len + 1, fmt, args);
-    
-    tud_cdc_n_write(0, buf, len);
-    tud_cdc_n_write_flush(0);
-
-    // strcat(spi_log, buf);
-}
 
 static void sleep_ms_with_loop(uint32_t ms)
 {
@@ -69,8 +46,6 @@ static void sleep_ms_with_loop(uint32_t ms)
 
 bool pn532_init(spi_inst_t *port, uint8_t nss)
 {
-    // if (*spi_log == 0) strcpy(spi_log, "SPI Log:\r\n");
-
     spi_port = port;
     gpio_nss = nss;
 
@@ -119,14 +94,6 @@ static int pn532_write(const uint8_t *data, uint8_t len)
     gpio_put(gpio_nss, 1);
     sleep_ms_with_loop(2);
 
-    {
-        cdprintf("spi_write(");
-        for (int i = 0; i < len; i++) {
-            cdprintf("%d%c", data[i], " )"[i == len - 1]);
-        }
-        cdprintf(" = %d\r\n", result);
-    }
-
     return result;
 }
 
@@ -137,10 +104,6 @@ static void pn532_begin_read(uint8_t mode)
 
     uint8_t mode_data[1] = {reverse_bit(mode)};
     spi_write_blocking(spi_port, mode_data, 1);
-
-    {
-        cdprintf("spi_begin_read(%d)\r\n", mode);
-    }
 }
 
 static int pn532_do_read(uint8_t *data, uint8_t len)
@@ -151,14 +114,6 @@ static int pn532_do_read(uint8_t *data, uint8_t len)
         data[i] = reverse_bit(data[i]);
     }
 
-    {
-        cdprintf("spi_do_read(");
-        for (int i = 0; i < result; i++) {
-            cdprintf("%d%c", data[i], " )"[i == len - 1]);
-        }
-        cdprintf(") = %d\r\n", result);
-    }
-
     return result;
 }
 
@@ -166,16 +121,10 @@ static void pn532_end_read()
 {
     gpio_put(gpio_nss, 1);
     sleep_ms_with_loop(2);
-
-    {
-        cdprintf("spi_end_read()\r\n");
-    }
 }
 
 static bool pn532_wait_ready()
 {
-    cdprintf("PN532 wait ready\r\n");
-
     for (int retry = 0; retry < 30; retry++) {
         pn532_begin_read(STATUS_READ);
         uint8_t status = 0;
@@ -183,10 +132,8 @@ static bool pn532_wait_ready()
         pn532_end_read();
 
         if (result == 1 && status == 0x01) {
-            cdprintf("PN532 wait ready SUCCESS!!!\r\n");
             return true;
         }
-        cdprintf("PN532 wait ready result = %d, status = %d\r\n", result, status);
         if (wait_loop) {
             wait_loop();
         }
@@ -196,26 +143,13 @@ static bool pn532_wait_ready()
     return false;
 }
 
-// static int read_frame(uint8_t *frame, uint8_t len)
-// {
-//     cdprintf("PN532 read frame\r\n");
-
-//     uint8_t buf[len + 1];
-//     int ret = pn532_do_read(buf, len + 1);
-
-//     if (ret == len + 1) {
-//         memcpy(frame, buf + 1, len);
-//         return len;
-//     }
-//     return ret;
-// }
-
-#define read_frame pn532_do_read
+static int read_frame(uint8_t *frame, uint8_t len)
+{
+    return pn532_do_read(frame, len);
+}
 
 static int write_frame(const uint8_t *frame, uint8_t len)
 {
-    cdprintf("PN532 write frame\r\n");
-
     return pn532_write(frame, len);
 }
 
@@ -269,7 +203,7 @@ int pn532_read_data(uint8_t *data, uint8_t len)
 
     int result = read_frame(resp, len + 2);
     if (result != len + 2) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     uint8_t checksum = 0;
@@ -279,11 +213,11 @@ int pn532_read_data(uint8_t *data, uint8_t len)
     }
 
     if (checksum != 0) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     if (resp[len + 1] != PN532_POSTAMBLE) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
     
     return len;
@@ -300,12 +234,6 @@ int pn532_write_command(uint8_t cmd, const uint8_t *param, uint8_t len)
     return pn532_write_data(data, len + 2);
 }
 
-// static void write_nack()
-// {
-//     const uint8_t nack[] = {0, 0, 0xff, 0xff, 0, 0};
-//     pn532_write(nack, 6);
-// }
-
 int pn532_peak_response_len()
 {
     uint8_t buf[5];
@@ -314,14 +242,14 @@ int pn532_peak_response_len()
     if (buf[0] != PN532_PREAMBLE ||
         buf[1] != PN532_STARTCODE1 ||
         buf[2] != PN532_STARTCODE2) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     uint8_t length = buf[3];
     uint8_t length_check = length + buf[4];
 
     if (length_check != 0) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     return buf[3];
@@ -330,22 +258,18 @@ int pn532_peak_response_len()
 int pn532_read_response(uint8_t cmd, uint8_t *resp, uint8_t len)
 {
     if (!pn532_wait_ready()) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     pn532_begin_read(DATA_READ);
 
     int real_len = pn532_peak_response_len();
     if (real_len < 0) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
-    // if (!pn532_wait_ready()) {
-    //     PRINT_CURRENT_LINE(); return -1;
-    // }
-
     if (real_len < 2) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     uint8_t data[real_len];
@@ -354,18 +278,16 @@ int pn532_read_response(uint8_t cmd, uint8_t *resp, uint8_t len)
     if (ret != real_len ||
         data[0] != PN532_PN532TOHOST ||
         data[1] != cmd + 1) {
-        cdprintf("PN532 read response failed (%d %d %d) expected (%d %d %d)\r\n",
-                 ret, data[0], data[1], real_len, PN532_PN532TOHOST, cmd + 1);
         return -1;
     }
 
     int data_len = real_len - 2;
     if (data_len > len) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     if (data_len <= 0) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
     
     memcpy(resp, data + 2, data_len);
@@ -553,14 +475,14 @@ int pn532_felica_command(uint8_t cmd, const uint8_t *param, uint8_t param_len, u
     int ret = pn532_write_command(0x40, cmd_buf, sizeof(cmd_buf));
     if (ret < 0) {
         DEBUG("\nFailed send felica command");
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     int result = pn532_read_response(0x40, readbuf, sizeof(readbuf));
 
     int outlen = readbuf[1] - 1;
     if ((readbuf[0] & 0x3f) != 0 || result - 2 != outlen) {
-        PRINT_CURRENT_LINE(); return -1;
+        return -1;
     }
 
     memmove(outbuf, readbuf + 2, outlen);
