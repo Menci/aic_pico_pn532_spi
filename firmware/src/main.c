@@ -271,8 +271,8 @@ void init()
     light_init();
     keypad_init();
 
-    nfc_init_i2c(I2C_PORT, I2C_SCL, I2C_SDA, I2C_FREQ);
-    nfc_init_spi(SPI_PORT, SPI_MISO, SPI_SCK, SPI_MOSI, SPI_RST, SPI_NSS, SPI_BUSY);
+    // nfc_init_i2c(I2C_PORT, I2C_SCL, I2C_SDA, I2C_FREQ);
+    nfc_init_spi(SPI_PORT, SPI_MISO, SPI_SCK, SPI_MOSI, SPI_NSS);
     nfc_init();
     nfc_set_wait_loop(wait_loop);
 
