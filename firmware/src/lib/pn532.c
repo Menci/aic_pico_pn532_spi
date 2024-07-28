@@ -38,8 +38,8 @@ static spi_inst_t *spi_port = spi0;
 static uint8_t gpio_nss;
 static pn532_wait_loop_t wait_loop = NULL;
 
-char last_message[256] = "";
-char spi_log[65535] = "";
+// char last_message[256] = "";
+// char spi_log[65535] = "";
 
 static void cdprintf(const char *fmt, ...)
 {
@@ -54,7 +54,7 @@ static void cdprintf(const char *fmt, ...)
     tud_cdc_n_write(0, buf, len);
     tud_cdc_n_write_flush(0);
 
-    strcat(spi_log, buf);
+    // strcat(spi_log, buf);
 }
 
 static void sleep_ms_with_loop(uint32_t ms)
@@ -69,7 +69,7 @@ static void sleep_ms_with_loop(uint32_t ms)
 
 bool pn532_init(spi_inst_t *port, uint8_t nss)
 {
-    if (*spi_log == 0) strcpy(spi_log, "SPI Log:\r\n");
+    // if (*spi_log == 0) strcpy(spi_log, "SPI Log:\r\n");
 
     spi_port = port;
     gpio_nss = nss;
