@@ -19,7 +19,7 @@ bool pn532_init(spi_inst_t *port, uint8_t nss);
 int pn532_write_command(uint8_t cmd, const uint8_t *param, uint8_t len);
 int pn532_read_response(uint8_t cmd, uint8_t *resp, uint8_t len);
 
-uint32_t pn532_firmware_ver();
+const char *pn532_firmware_ver();
 
 bool pn532_config_sam();
 bool pn532_config_rf();
@@ -35,6 +35,7 @@ bool pn532_mifare_read(uint8_t block_id, uint8_t block_data[16]);
 bool pn532_felica_read(uint16_t svc_code, uint16_t block_id, uint8_t block_data[16]);
 bool pn532_felica_write(uint16_t svc_code, uint16_t block_id, const uint8_t block_data[16]);
 
-void pn532_select();
+void pn532_select(int phase);
+void pn532_deselect();
 
 #endif

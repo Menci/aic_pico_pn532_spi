@@ -19,7 +19,8 @@ bool bana_feed(int c);
 /* if bana is currently active */
 bool bana_is_active();
 
-uint32_t bana_led_color();
+void bana_dtr_off();
 
+const char *bana_get_led_pattern();
 
 #endif

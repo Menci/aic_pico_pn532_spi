@@ -20,7 +20,8 @@
 static bool debug = false;
 #define DEBUG(...) if (nfc_runtime.debug) printf(__VA_ARGS__)
 
-#define BANA_EXPIRE_TIME 10000000ULL
+#define BANA_EXPIRE_US (1200 * 1000000ULL)
+#define BANA_FAST_EXPIRE_US (3 * 1000000ULL)
 
 static void putc_trap(uint8_t byte)
 {
@@ -74,7 +75,7 @@ typedef struct __attribute__((packed)) {
 
 static message_t request, response;
 
-struct {
+static struct {
     uint8_t frame_len;
     uint32_t time;
 } req_ctx;
@@ -138,12 +139,21 @@ static void send_ack()
     bana_puts("\x00\x00\xff\x00\xff\x00", 6);
 }
 
+static struct {
+    int led;
+    int beep;
+} bana_gpio;
+
 static void cmd_gpio()
 {
-    if (request.data[0] == 0x08) {
-    } else if (request.data[0] == 0x01) {
-    } else {
+    if (request.data[0] == 0x01) {
+        DEBUG("\nLED:%02x", request.data[1]);
+        bana_gpio.led = request.data[1];
+    } else if (request.data[0] == 0x08) {
+        DEBUG("\nBEEP:%02x", request.data[1]);
+        bana_gpio.beep = request.data[1];
     }
+
     send_simple_response(0x0e);
 }
 
@@ -193,11 +203,12 @@ static void handle_no_card()
 
 static void cmd_poll_card()
 {
-    nfc_card_t card = nfc_detect_card_ex(true, true, false);
+    bool mifare = (request.data[1] == 0);
+    bool felica = (request.data[1] == 1);
+    nfc_card_t card = nfc_detect_card_ex(mifare, felica, false);
     if (debug) {
         display_card(&card);
     }
-
     switch (card.card_type) {
         case NFC_CARD_MIFARE:
             handle_mifare(card.uid);
@@ -269,10 +280,16 @@ static void cmd_mifare()
     }
 }
 
+static void cmd_commthru()
+{
+    send_response_data("\x01", 1); // not sure if this is correct
+}
+
 static void cmd_select()
 {
+    nfc_select(0);
     send_response_data("\x00", 1);
-    nfc_select();
+    nfc_select(1);
 }
 
 static void cmd_deselect()
@@ -348,8 +365,6 @@ static void cmd_felica()
     }
 }
 
-static uint32_t led_color = 0;
-
 static void handle_frame()
 {
     switch (request.cmd) {
@@ -383,6 +398,9 @@ static void handle_frame()
         case 0x40:
             cmd_mifare();
             break;
+        case 0x42:
+            cmd_commthru();
+            break;
         case 0x44:
             cmd_deselect();
             break;
@@ -396,7 +414,7 @@ static void handle_frame()
             cmd_select();
             break;
         default:
-            printf("\nUnknown cmd: %02x\n", request.cmd);
+            printf("\nUnknown cmd: %02x (%d)\n", request.cmd, request.hdr.len);
             send_ack();
             break;
     }
@@ -428,7 +446,7 @@ bool bana_feed(int c)
     } else if (req_ctx.frame_len == request.hdr.len + 7) {
         handle_frame();
         req_ctx.frame_len = 0;
-        expire_time = time_us_64() + BANA_EXPIRE_TIME;
+        expire_time = time_us_64() + BANA_EXPIRE_US;
     }
     return true;
 }
@@ -438,7 +456,56 @@ bool bana_is_active()
     return time_us_64() < expire_time;
 }
 
-uint32_t bana_led_color()
+void bana_dtr_off()
 {
-    return led_color;
+    if (!bana_is_active()) {
+        return;
+    }
+    expire_time = time_us_64() + BANA_FAST_EXPIRE_US;
+}
+
+static const struct {
+    int cmd;
+    const char *pattern;
+} bana_led_patterns[] = {
+    { 0x00, " 1, #000000, 0" }, // off
+    { 0x01, " 1, #0000ff, 50" }, // blue
+    { 0x02, " 1, #ff0000, 50" }, // red
+    { 0x03, " 1, #00ff00, 50" }, // green
+    { 0x04, "-1, #0000ff, 100, #000000, 100" }, // fast blue flash
+    { 0x05, "-1, #0000ff, 500, #000000, 500" }, // slow blue flash
+    { 0x06, "-1, #0000ff, 200, #000000, 200" }, // regular blue flash
+    { 0x07, "-1, #0000ff, 200, #000000, 0, #000000, 1000" }, // blue flash with pause
+    { 0x08, "-1, #ffff00, 200, #000000, 200, #ff0000, 200, #000000, 200" }, // yellow and red cycle
+    { 0x09, "-1, #ff0000, 200, #000000, 200" }, // red on off flashing
+    { 0x0a, " 1, #ff0000, 300, #00ff00, 300, #0000ff, 300" }, // rgb cycle once
+    { 0x0b, "-1, #ff0000, 300, #00ff00, 300, #0000ff, 300" }, // rgb cycle endless
+    { 0x0c, "-1, #00ff00, 100, #0000ff, 100" }, // green blue epilepsy
+    { 0x0d, "-1, #00ff00, 100, #0000ff, 100" }, // green blue quick softer
+    { 0x0e, "-1, #ffffff, 300, #ff00ff, 300, #00ffff, 300" }, // white pink cyan
+    { 0x0f, "-1, #ff0000, 100, #00ff00, 100, #0000ff, 100" }, // rgb something
+    { 0x11, " 1, #00ff00, 200, #007f00, 200, #00ff00, 200, #007f00, 200, #0000ff, 200" }, // green to blue
+    { 0x14, " 1, #00ff00, 200, #00ff00, 1000, #000000, 0" }, // green then off
+    { 0x16, " 1, #ff0000, 200, #0000ff, 200" }, // red to blue
+    { 0x19, " 1, #ff0000, 200, #ff0000, 1000, #000000, 0" }, // red then off
+    { 0x1b, " 1, #0000ff, 200" } // to blue
+};
+
+const char *bana_get_led_pattern()
+{
+    if (bana_gpio.led < 0) {
+        return NULL;
+    }
+
+    int cmd = bana_gpio.led;
+    bana_gpio.led = -1;
+
+    int patt_num = sizeof(bana_led_patterns) / sizeof(bana_led_patterns[0]);
+    for (int i = 0; i < patt_num; i++) {
+        if (bana_led_patterns[i].cmd == cmd) {
+            return bana_led_patterns[i].pattern;
+        }
+    }
+
+    return NULL;
 }

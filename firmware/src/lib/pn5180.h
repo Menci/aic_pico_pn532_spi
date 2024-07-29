@@ -24,7 +24,7 @@ typedef void (*pn5180_wait_loop_t)();
 void pn5180_set_wait_loop(pn5180_wait_loop_t loop);
 
 bool pn5180_init(spi_inst_t *port, uint8_t rst, uint8_t nss, uint8_t busy);
-
+const char *pn5180_firmware_ver();
 void pn5180_write_reg(uint8_t reg, uint32_t v32);
 void pn5180_or_reg(uint8_t reg, uint32_t mask);
 void pn5180_and_reg(uint8_t reg, uint32_t mask);
@@ -52,7 +52,9 @@ bool pn5180_mifare_read(uint8_t block_id, uint8_t block_data[16]);
 
 bool pn5180_felica_read(uint16_t svc_code, uint16_t block_id, uint8_t block_data[16]);
 
-void pn5180_select();
+bool pn5180_15693_read(const uint8_t uid[8], uint8_t block_id, uint8_t block_data[4]);
+
+void pn5180_select(int phase);
 void pn5180_deselect();
 
 #endif

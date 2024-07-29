@@ -13,9 +13,10 @@
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
 
+#include "nfc.h"
 #include "pn5180.h"
 
-#define DEBUG(...) { if (0) printf(__VA_ARGS__); }
+#define DEBUG(...) { if (nfc_runtime.debug) printf(__VA_ARGS__); }
 
 #define IO_TIMEOUT_US 1000
 #define PN5180_I2C_ADDRESS 0x24
@@ -38,6 +39,7 @@ static spi_inst_t *spi_port;
 static uint8_t gpio_rst;
 static uint8_t gpio_nss;
 static uint8_t gpio_busy;
+static uint8_t version[2];
 
 bool pn5180_init(spi_inst_t *port, uint8_t rst, uint8_t nss, uint8_t busy)
 {
@@ -56,9 +58,15 @@ bool pn5180_init(spi_inst_t *port, uint8_t rst, uint8_t nss, uint8_t busy)
     gpio_nss = nss;
     gpio_busy = busy;
 
-    uint8_t buf[2];
-    pn5180_read_eeprom(0x12, buf, sizeof(buf));
-    return (buf[0] <= 15) && (buf[1] >= 2) && (buf[1] <= 15);
+    pn5180_read_eeprom(0x12, version, sizeof(version));
+    return (version[0] <= 15) && (version[1] >= 2) && (version[1] <= 15);
+}
+
+const char *pn5180_firmware_ver()
+{
+    static char ver_str[8];
+    sprintf(ver_str, "%d.%d", version[1], version[0]);
+    return ver_str;
 }
 
 static pn5180_wait_loop_t wait_loop = NULL;
@@ -227,11 +235,23 @@ static void rf_crc_on()
     pn5180_or_reg(PN5180_REG_CRC_RX_CONFIG, 0x01);
 }
 
-static void anti_collision(uint8_t code, uint8_t uid[5], uint8_t *sak)
+static struct {
+    uint8_t atqa[2];
+    uint8_t buf[5];
+    uint8_t sak;
+    uint8_t uid[7];
+    uint8_t len;
+    bool ready;
+} mi_poll;
+
+static bool anti_collision(uint8_t code, uint8_t uid[5], uint8_t *sak)
 {
     rf_crc_off();
     uint8_t cmd[7] = { code, 0x20 };
     pn5180_send_data(cmd, 2, 0);
+    if ((pn5180_get_rx() & 0x1ff) != 5) {
+        return false;
+    }
     pn5180_read_data(cmd + 2, 5); // uid
     memmove(uid, cmd + 2, 5);
 
@@ -239,41 +259,61 @@ static void anti_collision(uint8_t code, uint8_t uid[5], uint8_t *sak)
     cmd[0] = code;
     cmd[1] = 0x70;
     pn5180_send_data(cmd, 7, 0);
+    if ((pn5180_get_rx() & 0x1ff) != 1) {
+        return false;
+    }
     pn5180_read_data(sak, 1); // sak
+    return true;
 }
 
-static struct {
-    uint8_t buf[5];
-    uint8_t sak;
-    uint8_t uid[7];
-    uint8_t len;
-} mi_poll;
-
-static void poll_mifare_1()
+static void poll_mifare_0()
 {
     pn5180_reset();
     pn5180_load_rf_config(0x00, 0x80);
+    if (nfc_runtime.pn5180_tx_tweak) {
+        write_reg(CMD_WRITE_REG, 0x21, 0x783); // Enable DPLL
+    }
     pn5180_rf_field(true);
     rf_crc_off();
+}
 
+static void poll_mifare_1()
+{
     pn5180_and_reg(PN5180_REG_IRQ_CLEAR, 0x000fffff);
     pn5180_and_reg(PN5180_REG_SYSTEM_CONFIG, 0xfffffff8);
     pn5180_or_reg(PN5180_REG_SYSTEM_CONFIG, 0x03);
+
+    mi_poll.len = 0;
+    mi_poll.ready = true;
+
     uint8_t cmd[1] = {0x26};
     pn5180_send_data(cmd, 1, 7);
-    pn5180_read_data(mi_poll.buf, 2);
+    if ((pn5180_get_rx() & 0x1ff) != 2) {
+        mi_poll.ready = false;
+        return;
+    }
+    pn5180_read_data(mi_poll.atqa, 2);
 }
 
 static void poll_mifare_2()
 {
-    anti_collision(0x93, mi_poll.buf, &mi_poll.sak);
+    if (!mi_poll.ready) {
+        return;
+    }
+
+    if (!anti_collision(0x93, mi_poll.buf, &mi_poll.sak)) {
+        return;
+    }
+
     mi_poll.len = 0;
     if ((mi_poll.sak & 0x04) == 0) {
         memmove(mi_poll.uid, mi_poll.buf, 4);
         mi_poll.len = 4;
     } else if (mi_poll.buf[0] == 0x88) {
         memmove(mi_poll.uid, mi_poll.buf + 1, 3);
-        anti_collision(0x95, mi_poll.buf, &mi_poll.sak);
+        if (!anti_collision(0x95, mi_poll.buf, &mi_poll.sak)) {
+            return;
+        }
         if (mi_poll.sak != 0xff) {
             memmove(mi_poll.uid + 3, mi_poll.buf, 4);
             mi_poll.len = 7;
@@ -283,9 +323,10 @@ static void poll_mifare_2()
 
 bool pn5180_poll_mifare(uint8_t uid[7], int *len)
 {
+    poll_mifare_0();
     poll_mifare_1();
     poll_mifare_2();
-    
+
     memcpy(uid, mi_poll.uid, mi_poll.len);
     *len = mi_poll.len;
     return *len > 0;
@@ -323,6 +364,16 @@ bool pn5180_poll_felica(uint8_t uid[8], uint8_t pmm[8], uint8_t syscode[2], bool
     memcpy(uid, out.idm, 8);
     memcpy(pmm, out.pmm, 8);
     memcpy(syscode, out.syscode, 2);
+
+    /* double check the result */
+	pn5180_send_data(cmd, sizeof(cmd), 0x00);
+    sleep_ms(1);
+    pn5180_read_data((uint8_t *)&out, sizeof(out));
+    if ((out.len != sizeof(out)) || (out.cmd != 0x01) ||
+        (memcmp(uid, out.idm, 8) != 0)) {
+        return false;
+    }
+
     memcpy(idm_cache, uid, 8);
     return true;
 }
@@ -417,27 +468,33 @@ bool pn5180_mifare_auth(const uint8_t uid[4], uint8_t block_id, uint8_t key_id, 
     }
 
     uint8_t ignored[16];
-    if (!pn5180_mifare_read(block_id & 0xfc, ignored)) {
+    if (!pn5180_mifare_read((block_id & 0xfc) + 1, ignored)) {
         DEBUG("\nPN5180 Mifare auth check bad");
         return false;
     }
 
     cache.result = true;
+
     return true;
 }
 
 bool pn5180_mifare_read(uint8_t block_id, uint8_t block_data[16])
 {
     static struct {
+        uint8_t block_id;
         uint32_t time;
         uint8_t data[16];
-    } cache = { 0 };
+    } cache[3] = { 0 };
 
     uint32_t now = time_us_32();
-    if ((now < cache.time + 1000000) && (block_id == 0)) {
-        memcpy(block_data, cache.data, 16);
-        cache.time = now;
-        return true;
+
+    if (block_id < 3) {
+        if ((cache[block_id].block_id == block_id) &&
+            (now < cache[block_id].time + 1000000)) {
+            memcpy(block_data, cache[block_id].data, 16);
+            cache[block_id].time = now;
+            return true;
+        }
     }
 
     uint8_t cmd[] = { CMD_MIFARE_READ, block_id };
@@ -453,9 +510,10 @@ bool pn5180_mifare_read(uint8_t block_id, uint8_t block_data[16])
 
     pn5180_read_data(block_data, 16);
 
-    if (block_id == 0) {
-        memcpy(cache.data, block_data, 16);
-        cache.time = time_us_32();
+    if (block_id < 3) {
+        memcpy(cache[block_id].data, block_data, 16);
+        cache[block_id].block_id = block_id;
+        cache[block_id].time = time_us_32();
     }
 
     return true;
@@ -494,14 +552,52 @@ bool pn5180_felica_read(uint16_t svc_code, uint16_t block_id, uint8_t block_data
     return true;
 }
 
-/* Not real select, just a time distribution of a poll */
-void pn5180_select()
+void pn5180_select(int phase)
 {
-    poll_mifare_1();
+    if (phase == 0) {
+        poll_mifare_0();
+    } else {
+        poll_mifare_1();
+    }
 }
 
-/* Not real deselect, just a time distribution of a poll */
 void pn5180_deselect()
 {
     poll_mifare_2();
+}
+
+bool pn5180_15693_read(const uint8_t uid[8], uint8_t block_id, uint8_t block_data[4])
+{
+    uint8_t cmd[] = { 0x22, 0x20, uid[7], uid[6], uid[5], uid[4],
+                      uid[3], uid[2], uid[1], uid[0], block_id } ;
+    pn5180_send_data(cmd, sizeof(cmd), 0);
+
+    sleep_ms_with_loop(5);
+
+    uint32_t status = pn5180_get_irq();
+    if (0 == (status & 0x4000)) {
+        return false;
+    }
+
+    while (0 == (status & 0x01)) {
+        sleep_ms_with_loop(5);
+        status = pn5180_get_irq();
+    }
+  
+    uint16_t len = pn5180_get_rx() & 0x1ff;
+
+    uint8_t buf[5] = { 0 };
+
+    if (len > sizeof(buf)) {
+        return false;
+    }
+
+    pn5180_read_data(buf, len);
+    if ((buf[0] & 0x01) != 0) {
+        return false;
+    }
+
+    memcpy(block_data, buf + 1, 4);
+
+    return true;
 }
