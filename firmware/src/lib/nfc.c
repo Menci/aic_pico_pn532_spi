@@ -136,8 +136,10 @@ void nfc_init()
         if (nfc_module != NFC_MODULE_UNKNOWN) {
             break;
         }
-        sleep_ms(200);
+        // sleep_ms(200);
     }
+    // Forcibly set to PN532
+    nfc_module = NFC_MODULE_PN532;
 }
 
 void nfc_set_wait_loop(nfc_wait_loop_t loop)

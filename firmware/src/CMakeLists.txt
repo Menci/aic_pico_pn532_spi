@@ -1,8 +1,9 @@
 pico_sdk_init()
 
 include_directories(${CMAKE_CURRENT_LIST_DIR}
-                    ${CMAKE_CURRENT_LIST_DIR}/../include)
-add_compile_options(-Wall -Werror -Wfatal-errors -O3)
+                    ${CMAKE_CURRENT_LIST_DIR}/../include
+                    ${CMAKE_CURRENT_LIST_DIR}/../../../../src/FreeRTOSConfig)
+add_compile_options(-Wall -Werror -Wfatal-errors -Wno-error=unused-variable -Og -g)
 link_libraries(pico_multicore pico_stdlib hardware_i2c hardware_spi
                tinyusb_device tinyusb_board)
                                    
@@ -29,4 +30,5 @@ function(make_firmware board board_def)
 endfunction()
 
 add_library(aic lib/aime.c lib/bana.c lib/pn532.c lib/pn5180.c lib/nfc.c)
+target_link_libraries(aic PRIVATE FreeRTOS-Kernel FreeRTOS-Kernel-Heap4)
 make_firmware(aic_pico BOARD_AIC_PICO)

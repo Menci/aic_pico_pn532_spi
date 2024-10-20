@@ -13,6 +13,9 @@
 
 #include "pn532.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 #define DEBUG(...) { if (0) printf(__VA_ARGS__); }
 
 #define IO_TIMEOUT_US 1000
@@ -34,14 +37,9 @@ static spi_inst_t *spi_port = spi0;
 static uint8_t gpio_nss;
 static pn532_wait_loop_t wait_loop = NULL;
 
-static void sleep_ms_with_loop(uint32_t ms)
+static void sleep_ms_rtos(uint32_t ms)
 {
-    for (uint32_t i = 0; i < ms; i++) {
-        sleep_ms(1);
-        if (wait_loop) {
-            wait_loop();
-        }
-    }
+    vTaskDelay(pdMS_TO_TICKS(ms));
 }
 
 bool pn532_init(spi_inst_t *port, uint8_t nss)
@@ -56,7 +54,7 @@ bool pn532_init(spi_inst_t *port, uint8_t nss)
 
     // Wake up
     gpio_put(gpio_nss, 0);
-    sleep_ms_with_loop(2);
+    sleep_ms_rtos(2);
     gpio_put(gpio_nss, 1);
 
     uint32_t ver = pn532_firmware_ver();
@@ -87,12 +85,12 @@ static int pn532_write(const uint8_t *data, uint8_t len)
     }
 
     gpio_put(gpio_nss, 0);
-    sleep_ms_with_loop(2);
+    sleep_ms_rtos(2);
 
     int result = spi_write_blocking(spi_port, buffer, len + 1);
 
     gpio_put(gpio_nss, 1);
-    sleep_ms_with_loop(2);
+    sleep_ms_rtos(2);
 
     return result;
 }
@@ -100,7 +98,7 @@ static int pn532_write(const uint8_t *data, uint8_t len)
 static void pn532_begin_read(uint8_t mode)
 {
     gpio_put(gpio_nss, 0);
-    sleep_ms_with_loop(2);
+    sleep_ms_rtos(2);
 
     uint8_t mode_data[1] = {reverse_bit(mode)};
     spi_write_blocking(spi_port, mode_data, 1);
@@ -120,7 +118,7 @@ static int pn532_do_read(uint8_t *data, uint8_t len)
 static void pn532_end_read()
 {
     gpio_put(gpio_nss, 1);
-    sleep_ms_with_loop(2);
+    sleep_ms_rtos(2);
 }
 
 static bool pn532_wait_ready()
@@ -137,7 +135,7 @@ static bool pn532_wait_ready()
         if (wait_loop) {
             wait_loop();
         }
-        sleep_us(1000);
+        sleep_ms_rtos(1);
     }
 
     return false;
